@@ -1,0 +1,2173 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>慧實證 AI Evidence-based Medicine Bot</title>
+  
+  <!-- 載入 Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- 載入 React 核心與 ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- 載入 Babel 以便在瀏覽器編譯 JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- 載入 Lucide Icons (使用與原版相近的版本確保圖示一致) -->
+  <script src="https://unpkg.com/lucide@0.292.0/dist/umd/lucide.min.js"></script>
+  
+  <style>
+    /* 隱藏未編譯前的閃爍現象 */
+    #root:empty { display: none; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans antialiased selection:bg-indigo-100">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // --- Lucide Icons 對應轉換工具 ---
+    // 在純 HTML 環境中，我們自製一個元件將 UMD 版的 lucide 轉換為 React 元件
+    const LucideIcon = ({ iconName, className, size = 24, ...props }) => {
+      const iconData = window.lucide?.icons?.[iconName];
+      if (!iconData) {
+        console.warn(`Icon ${iconName} not found`);
+        return <svg className={className} width={size} height={size} {...props} />;
+      }
+      
+      const renderNode = (node, i) => {
+        if (!node) return null;
+        const [tag, attrs, children] = node;
+        return React.createElement(
+          tag,
+          { ...attrs, key: i },
+          children ? children.map((child, j) => renderNode(child, j)) : null
+        );
+      };
+
+      return React.createElement(
+        'svg',
+        {
+          ...iconData[1],
+          width: size,
+          height: size,
+          className: `lucide lucide-${iconName.toLowerCase()} ${className || ''}`,
+          ...props,
+        },
+        iconData[2] ? iconData[2].map((child, i) => renderNode(child, i)) : null
+      );
+    };
+
+    const createIcon = (name) => (props) => <LucideIcon iconName={name} {...props} />;
+
+    // 定義所有使用的圖示
+    const Search = createIcon('Search');
+    const BookOpen = createIcon('BookOpen');
+    const Filter = createIcon('Filter');
+    const CheckCircle = createIcon('CheckCircle');
+    const CheckCircle2 = createIcon('CheckCircle2');
+    const Loader2 = createIcon('Loader2');
+    const ExternalLink = createIcon('ExternalLink');
+    const AlertCircle = createIcon('AlertCircle');
+    const ChevronRight = createIcon('ChevronRight');
+    const Info = createIcon('Info');
+    const Database = createIcon('Database');
+    const Activity = createIcon('Activity');
+    const List = createIcon('List');
+    const Layout = createIcon('Layout');
+    const Hash = createIcon('Hash');
+    const Award = createIcon('Award');
+    const ClipboardList = createIcon('ClipboardList');
+    const Upload = createIcon('Upload');
+    const FileText = createIcon('FileText');
+    const XCircle = createIcon('XCircle');
+    const Play = createIcon('Play');
+    const Settings = createIcon('Settings');
+    const ArrowRight = createIcon('ArrowRight');
+    const ThumbsUp = createIcon('ThumbsUp');
+    const ThumbsDown = createIcon('ThumbsDown');
+    const FileCheck = createIcon('FileCheck');
+    const Home = createIcon('Home');
+    const ChevronLeft = createIcon('ChevronLeft');
+    const Lock = createIcon('Lock');
+    const Code = createIcon('Code');
+    const Layers = createIcon('Layers');
+    const Terminal = createIcon('Terminal');
+    const User = createIcon('User');
+    const Zap = createIcon('Zap');
+    const Target = createIcon('Target');
+    const BarChart3 = createIcon('BarChart3');
+    const HelpCircle = createIcon('HelpCircle');
+    const Book = createIcon('Book');
+    const ChevronUp = createIcon('ChevronUp');
+    const ChevronDown = createIcon('ChevronDown');
+    const FileSearch = createIcon('FileSearch');
+    const Download = createIcon('Download');
+    const RefreshCw = createIcon('RefreshCw');
+    // --- 結束 Icons 定義 ---
+
+
+    const PUBMED_API_KEY = "861eb99bd36295f69d9c5c174e794976d108";
+    const APP_VERSION = "7.6 beta"; 
+
+    const TASK_CONFIGS = {
+      search: {
+        model: "gemini-3.1-flash-lite-preview", 
+        temperature: 0.7,
+        topP: 0.95
+      },
+      appraisal: {
+        model: "gemini-3.1-flash-lite-preview", 
+        temperature: 0.3,
+        topP: 0.9
+      }
+    };
+
+    const ACCESS_CODE = "EBM2026"; 
+
+    const STUDY_TYPE_FILTERS = {
+      Therapy: 'systematic [sb]',
+      Diagnosis: 'diagnosis/narrow [filter]',
+      Prognosis: 'prognosis/narrow [filter]',
+      Etiology: 'etiology/narrow [filter]',
+      Prediction: '' 
+    };
+
+    const KNOWLEDGE_BASE = {
+        sr_rct: {
+            title: "Systematic Review of RCTs",
+            description: "CASP Checklist for systematic reviews with meta-analysis of randomised controlled trials (RCTs)",
+            llm_scope: `
+            You are a Critical Appraisal Expert. Assess the following methodology domains strictly based on the text.
+            
+            Section A: Basic Study Design
+            1. Did the systematic review address a clearly formulated research question?
+               - Consider if the question is defined in terms of PICOTS: Population, Intervention, Comparator, Outcome/s, Time, Setting.
+            2. Did the researchers search for appropriate study design(s) to answer the research question?
+               - Is RCT the appropriate design for the efficacy question?
+
+            Section B: Methodological Soundness
+            3. Were all the relevant primary research studies likely to have been included in the systematic review?
+               - 3a. Searching for primary research studies?
+               - Did it include major databases (e.g., MEDLINE/PubMed, Embase)?
+               - Were MeSH terms provided?
+               - Were non-English languages included?
+               - Was citation searching (reference lists) undertaken?
+               - Was grey literature/unpublished studies searched (e.g., trial registers)?
+               - Did they consult experts?
+               - 3b. Screening primary research studies from the search (e.g., two independent reviewers?)
+               - 3c. Selecting primary research studies to include in the systematic review? (Kappa reported? Agreement checked?)
+               - 3d. Summarising the search and its outputs? PRISMA: Is a flow diagram presented (duplicates, exclusions)?
+            4. Did the researchers assess the validity/methodological rigour of primary research studies included in the systematic review?
+               - Was a validated tool used (e.g., Cochrane Risk of Bias)?
+               - Was the tool appropriate for RCTs?
+            5. Did the researchers extract, and present information from the individual primary research studies appropriately and transparently?
+               - 5a. Extraction: Robust process? (Double extraction?)
+               - 5b. Presentation: Characteristics table (participants, intervention)? Forest plots?
+
+            Section C: Results Trustworthiness
+            6. Did the researchers analyse the pooled results of the individual primary research studies appropriately?
+               - Was power calculation/sample size estimation done?
+               - Were appropriate effect measures/CIs/p-values used?
+               - Was Minimal Important Difference (MID) provided?
+               - Was heterogeneity assessed (I-squared)?
+               - Was the model (Fixed vs Random effects) appropriate?
+               - Were sensitivity analyses performed?
+               - Was publication bias assessed (e.g., Funnel plot)?
+            6.1. Subgroup Analysis:
+               - Pre-specified with rationale?
+               - Adjusted for multiple testing?
+               - Interaction tests significant?
+               - Within-study comparison?
+            6.2. Meta-regression:
+               - Pre-specified?
+               - Continuous data thresholds justified?
+               - Adjusted for multiple testing?
+               - Random-effects model used?
+            7. Did the researchers report any limitations of the systematic review and, if so, do the limitations discussed cover all the issues you identified during critical appraisal?
+               - Discuss power sufficiency?
+               - Discuss precision (CI width)?
+               - Discuss potential bias/confounding?
+               - Discuss heterogeneity impact?
+            7.1. Subgroup-analysis 
+            7.2. Meta-regression    
+            8. Would the benefits of intervention outweigh any potential disadvantages, harms and/or additional demand for resources associated with acting on the results?
+               - Do benefits outweigh harms?
+               - Are resource demands (cost, workforce) reported?
+            `,
+            human_scope: [
+                { 
+                    id: "9", 
+                    question: "Can the results be applied to your local population/setting?", 
+                    hint: "Differences in population, setting? Outcomes useful to you?" 
+                },
+                { 
+                    id: "10", 
+                    question: "If actioned, would the findings represent greater value for your population?", 
+                    hint: "Consider costs, skills mix, training, disinvestment possibilities." 
+                },
+                { 
+                    id: "Conclusion", 
+                    question: "Can it be used to support evidence-based decision-making?", 
+                    hint: "Would you change practice? Implement without delay?" 
+                }
+            ]
+        },
+        sr_nrs: {
+            title: "Systematic Review of NRS",
+            description: "CASP Checklist for systematic reviews of observational studies (Cohort, Case-control)",
+            llm_scope: `
+            You are a Critical Appraisal Expert. Assess the following methodology domains strictly based on the text.
+
+            Section A: Basic Study Design
+            8. Did the systematic review address a clearly formulated research question?
+               - PECOTS: Population, Exposure, Comparator, Outcome, Time, Setting.
+            9. Did the researchers search for appropriate study design(s)?
+               - Are Cohort/Case-control/Cross-sectional designs appropriate?
+
+            Section B: Methodological Soundness
+            10. Were all the relevant primary research studies likely to have been included?
+               - 10e. Search Strategy: Comprehensive? (Databases, MeSH, non-English, citation, unpublished, experts)
+               - 10f. Screening: Robust process? (Independent reviewers, defined criteria?)
+               - 10g. Selection: Robust full-text analysis? (Kappa reported?)
+               - 10h. PRISMA: Flowchart presented?
+            11. Did the researchers assess the validity/rigour of primary studies?
+               - Validated tool used (e.g., NOS, ROBINS-E)?
+               - Interpreted accurately?
+            12. Did the researchers extract and present information appropriately?
+               - Robust extraction process?
+               - Key characteristics table presented?
+               - Forest plots presented?
+
+            Section C: Results Trustworthiness
+            13. Did the researchers analyse the pooled results appropriately?
+               - Sample size estimation?
+               - Effect measures/CIs/p-values?
+               - Minimal Important Difference (MID)?
+               - Heterogeneity (I-squared) and Model choice?
+               - Sensitivity analyses?
+               - Small-study effect/Publication bias (Funnel plot)?
+            13.1. Subgroup Analysis:
+               - Pre-specified? Rationale? Adjusted for multiple testing? Interaction tests?
+            13.2. Meta-regression:
+               - Pre-specified? Thresholds justified? Adjusted for multiple testing?
+            14. Did the researchers report limitations?
+               - Sample size sufficiency? Precision?
+               - Systematic bias/Confounding identified?
+               - Implications of sensitivity/subgroup analyses?
+            15. Benefits vs Harms/Resources?
+               - Balance of benefit/harm? Resource demands (cost, workforce)?
+            `,
+            human_scope: [
+                { 
+                    id: "16", 
+                    question: "Can the results be applied to your local population/setting?", 
+                    hint: "Differences in population, setting? Outcomes useful locally?" 
+                },
+                { 
+                    id: "17", 
+                    question: "If actioned, would the findings represent greater value for your population?", 
+                    hint: "Consider costs, skills, resources vs benefit." 
+                },
+                { 
+                    id: "Conclusion", 
+                    question: "Can it be used to support evidence-based decision-making?", 
+                    hint: "Would you change practice?" 
+                }
+            ]
+        },
+        rct: {
+            title: "RCT",
+            description: "CASP Checklist for Randomised Controlled Trials",
+            llm_scope: `
+            You are a Critical Appraisal Expert. Assess the following methodology domains strictly based on the text.
+
+            Section A: Validity of Design
+            1. Did the study address a clearly formulated research question?
+               - Population, Intervention, Comparator, Outcomes.
+            2. Was assignment randomised?
+               - Method appropriate? Sequence concealed? Bias eliminated?
+            3. Were all participants accounted for?
+               - Losses to follow-up? Intention-to-Treat (ITT)? Stopped early?
+
+            Section B: Methodological Soundness
+            4. Blinding status:
+               - 4a. Participants?
+               - 4b. Investigators?
+               - 4c. Assessors?
+            5. Were groups similar at the start?
+               - Baseline characteristics balanced?
+            6. Did groups receive equal care aside from intervention?
+               - Protocol defined? Additional interventions similar? Follow-up interval same?
+
+            Section C: Results
+            7. Were effects reported comprehensively?
+               - Power calculation?
+               - Specified outcomes?
+               - Missing data/differential drop-out?
+               - P-values?
+            8. Was precision reported?
+               - Confidence Intervals (CIs)?
+            9. Benefits vs Harms/Costs?
+               - Effect size?
+               - Harms/unintended effects reported?
+               - Cost-effectiveness analysis?
+            `,
+            human_scope: [
+                { 
+                    id: "10", 
+                    question: "Can the results be applied to your local population?", 
+                    hint: "Participants similar? Important outcomes missing?" 
+                },
+                { 
+                    id: "11", 
+                    question: "Would the intervention provide greater value than existing care?", 
+                    hint: "Resources, training, disinvestment." 
+                }
+            ]
+        },
+        cohort: {
+            title: "Cohort Study",
+            description: "CASP Checklist for Cohort Studies",
+            llm_scope: `
+            You are a Critical Appraisal Expert. Assess the following methodology domains strictly based on the text.
+
+            Section A: Validity of Results
+            12. Did the study address a clearly focused issue? (Population, Risk factor, Outcome)
+            13. Was the cohort recruited in an acceptable way?
+                - Selection bias? Representative? Inclusion criteria?
+            14. Was exposure accurately measured?
+                - Subjective vs Objective? Validated? Same procedure?
+            15. Was outcome accurately measured?
+                - Subjective vs Objective? Validated? Blinded?
+            16. Confounding factors:
+                - 16a. Identified important factors?
+                - 16b. Accounted for in design/analysis (restriction, stratification, regression)?
+            17. Follow up:
+                - 17a. Complete enough? (Losses accounted?)
+                - 17b. Long enough?
+
+            Section B: Results
+            18. What are the results?
+                - Bottom line results? Rate/proportion? Strong association (RR)? ARR?
+            19. How precise are the results?
+                - Confidence Intervals (CIs)?
+            20. Do you believe the results?
+                - Bias? Confounding?
+                - Bradford Hill criteria (time sequence, dose-response, plausibility)?
+            `,
+            human_scope: [
+                { 
+                    id: "21", 
+                    question: "Can the results be applied to the local population?", 
+                    hint: "Different subjects? Local setting differs? Quantify local benefits?" 
+                },
+                { 
+                    id: "22", 
+                    question: "Do the results fit with other available evidence?", 
+                    hint: "Consistency with other studies." 
+                },
+                { 
+                    id: "23", 
+                    question: "What are the implications for practice?", 
+                    hint: "Change practice? Policy decision?" 
+                }
+            ]
+        }
+    };
+
+    const PDF_JS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    const PDF_JS_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    
+    const generatePDFReport = (reportTitle, config, contentHtml) => {
+      const exportDate = new Date().toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      const fullHtml = `
+        <html>
+          <head>
+            <title>${reportTitle}</title>
+            <style>
+              body { font-family: "Microsoft JhengHei", sans-serif; padding: 40px; color: #1e293b; max-width: 800px; margin: 0 auto; }
+              h1 { color: #312e81; display: flex; align-items: center; gap: 12px; margin-bottom: 0; }
+              .copyright { font-size: 0.8rem; color: #cbd5e1; font-weight: normal; }
+              h3 { color: #64748b; margin-top: 5px; border-bottom: 2px solid #e0e7ff; padding-bottom: 15px; }
+              .header-info { background-color: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 30px; font-size: 0.85rem; }
+              .section-title { font-size: 1.2rem; font-weight: bold; margin-top: 20px; color: #0f172a; border-left: 4px solid #4f46e5; padding-left: 10px; }
+              table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+              th, td { border: 1px solid #e2e8f0; padding: 8px; text-align: left; }
+              th { background-color: #f1f5f9; }
+            </style>
+          </head>
+          <body>
+            <h1>慧實證 <span class="copyright">©jerryljw</span></h1>
+            <h3>Artificial Intelligence Evidence-based Medicine Bot</h3>
+              <div class="header-info">
+                        <p><strong>報告主題：</strong>${reportTitle}</p>
+                        <p><strong>匯出日期：</strong>${exportDate}</p>
+                        <p><strong>系統版本：</strong>${APP_VERSION}</p>
+                        <hr style="border-top: 1px dashed #cbd5e1; margin: 8px 0;">
+                        <p><strong>AI 模型：</strong>${config.model}</p>
+                        <p><strong>參數設定：</strong>Top-P: ${config.topP} | Temperature: ${config.temperature}</p>
+              </div>
+      
+            <div class="content">${contentHtml}</div>
+            <script>window.onload = function() { window.print(); }<\/script>
+          </body>
+        </html>
+      `;
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+        printWindow.document.write(fullHtml);
+        printWindow.document.close();
+      }
+    };
+
+    const SettingsModal = ({ isOpen, onClose, geminiKey, setGeminiKey }) => {
+      if (!isOpen) return null;
+
+      return (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white max-w-md w-full rounded-[2rem] shadow-2xl border border-slate-100 overflow-hidden">
+            <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-center">
+              <h3 className="font-black text-slate-800 flex items-center gap-2">
+                <Settings className="w-5 h-5 text-indigo-600" /> 系統設定
+              </h3>
+              <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
+                <XCircle className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
+            <div className="p-8 space-y-4">
+              <div>
+                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Gemini API Key</label>
+                <input 
+                  type="password" 
+                  value={geminiKey}
+                  onChange={(e) => {
+                    setGeminiKey(e.target.value);
+                  }}
+                  className="w-full p-4 bg-slate-50 border-2 rounded-xl font-mono text-sm focus:border-indigo-500 outline-none transition-all"
+                  placeholder="請填入 API key"
+                />
+                <p className="mt-2 text-[10px] text-slate-400">
+                  * Key 將儲存於您的瀏覽器本地快取 (Local Storage)，我們不會儲存於任何伺服器。👋🏻
+                </p>
+              </div>
+              <button 
+                onClick={onClose}
+                className="w-full py-4 bg-indigo-600 text-white font-black rounded-xl shadow-lg hover:bg-indigo-700 transition-all"
+              >
+                完成設定 
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const LoginScreen = ({ onLogin }) => {
+      const [input, setInput] = useState('');
+      const [apiKeyInput, setApiKeyInput] = useState('');
+      const [error, setError] = useState(false);
+      const [loading, setLoading] = useState(false);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setTimeout(() => {
+          if (input === ACCESS_CODE) {
+            onLogin(true,apiKeyInput);
+          } else {
+            setError(true);
+            setLoading(false);
+          }
+        }, 600);
+      };
+
+      return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-white rounded-[2rem] shadow-xl border border-slate-100 overflow-hidden">
+            <div className="bg-indigo-600 p-10 text-center text-white">
+              <Lock className="w-12 h-12 mx-auto mb-4" />
+              <h2 className="text-2xl font-black">慧實證©</h2>
+              <h3 className="text-sm font-bold opacity-80 uppercase tracking-tighter">AI Evidence-based Medicine Bot</h3>
+            </div>
+            <form onSubmit={handleSubmit} className="p-8 space-y-5">
+              {/* 驗證碼輸入 */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Access Code</label>
+                <input 
+                  type="password" 
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  className="w-full p-4 bg-slate-50 border-2 rounded-xl text-center font-bold focus:border-indigo-500 outline-none transition-all"
+                  placeholder="請輸入訪問密碼"
+                />
+              </div>
+
+              {/* Gemini API Key 輸入 */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Gemini API Key</label>
+                <input 
+                  type="password" 
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  className="w-full p-4 bg-slate-50 border-2 rounded-xl text-center font-mono text-xs focus:border-indigo-500 outline-none transition-all"
+                  placeholder="AIzaSy..."
+                />
+              </div>
+
+              {error && <p className="text-rose-500 text-center font-bold text-xs animate-bounce">密碼錯誤，請重試 😵‍💫</p>}
+              
+              <button type="submit" disabled={loading} className="w-full py-4 bg-indigo-600 text-white font-black rounded-xl shadow-lg hover:bg-indigo-700 active:scale-95 transition-all">
+                {loading ? "驗證中..." : "驗證並登入"}
+              </button>
+              
+              <p className="text-center text-[10px] text-slate-400 font-medium pt-2">
+                Key 僅供當前工作階段使用，重新整理即清除 👋🏻
+              </p>
+            </form>
+          </div>
+        </div>
+      );
+    };
+
+    const DisclaimerModal = ({ onAccept }) => {
+      return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white max-w-2xl w-full rounded-[2.5rem] shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-amber-50 p-8 border-b border-amber-100 flex items-center gap-4">
+              <div className="p-3 bg-amber-50 rounded-2xl text-white shadow-lg shadow-amber-200">
+                <AlertCircle className="w-8 h-8 text-amber-500" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-black text-slate-800 tracking-tight">版權聲明與使用條款</h2>
+                <p className="text-amber-700 text-sm font-bold uppercase tracking-widest">Copyright & Safety Disclaimer</p>
+              </div>
+            </div>
+            
+            <div className="p-10 overflow-y-auto text-slate-600 leading-relaxed space-y-6">
+              
+              <p className="font-bold text-slate-800">
+                本系統為「慧實證」AI 輔助實證醫學工作流解決方案測試版。使用者必須詳實確認 AI 生成的內容，本平台並不負責提供醫療建議；所產生的資訊僅供學術研究及醫療人員參考，不可作為醫療建議的唯一根據。
+              </p>
+              
+              <div className="pt-4 border-t border-slate-100">
+                <h4 className="font-black text-slate-400 text-xs uppercase tracking-widest mb-2 flex items-center gap-2">
+                  <Code className="w-3 h-3" /> 開源授權說明
+                </h4>
+                <p className="text-sm">
+                  本平台的程式碼為開源程式碼，使用者若要刪除或變更程式碼內容，請引用本平台的智慧財產權。
+                </p>
+              </div>
+            </div>
+
+            <div className="p-8 bg-slate-50 border-t border-slate-100">
+              <button 
+                onClick={onAccept}
+                className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-2xl shadow-xl shadow-indigo-100 transition-all flex items-center justify-center gap-2 group"
+              >
+                我已閱讀並同意上述條款 <CheckCircle className="w-5 h-5 group-hover:scale-110 transition-transform" />
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    async function callGemini(prompt, systemInstruction, isJson = false, options = {}, apiKey) {
+      if (!apiKey) throw new Error("請先在設定中輸入 Gemini API Key 😵‍💫");
+
+      const model = options.model || TASK_CONFIGS.search.model;
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        generationConfig: {
+          temperature: options.temperature ?? 0.7,
+          responseMimeType: isJson ? "application/json" : "text/plain"
+        }
+      };
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const result = await response.json();
+      
+      if (result.error) {
+        throw new Error(`Gemini API 錯誤: ${result.error.message} 😧`);
+      }
+
+      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      return isJson ? JSON.parse(text) : text;
+    }
+
+    async function lookupMeSHTerm(term) {
+      try {
+        const url = `https://id.nlm.nih.gov/mesh/lookup/term?label=${encodeURIComponent(term)}&match=exact&limit=5`;
+        const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        if (!response.ok) return null;
+        let data = await response.json();
+
+        if (!data || data.length === 0) {
+          const fuzzyUrl = `https://id.nlm.nih.gov/mesh/lookup/term?label=${encodeURIComponent(term)}&match=contains&limit=5`;
+          const fuzzyRes = await fetch(fuzzyUrl, { headers: { 'Accept': 'application/json' } });
+          data = await fuzzyRes.json();
+        }
+
+        if (data && data.length > 0) {
+          const descriptor = data.find(item => item.resource && item.resource.includes('/mesh/D'));
+          if (descriptor) return descriptor.label;
+          const scr = data[0];
+          if (scr.resource && scr.resource.includes('/mesh/C')) {
+            const scrId = scr.resource.split('/').pop();
+            const detailUrl = `https://id.nlm.nih.gov/mesh/lookup/details?supplementaryConcept=${scrId}`;
+            const detailRes = await fetch(detailUrl, { headers: { 'Accept': 'application/json' } });
+            if (detailRes.ok) {
+              const details = await detailRes.json();
+              if (details.hm && details.hm.length > 0) return details.hm[0].label;
+            }
+          }
+          return scr.label;
+        }
+        return null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    async function fetchPubMedIds(query) {
+      const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=500&sort=relevance&retmode=json&api_key=${PUBMED_API_KEY}`;
+      const res = await fetch(searchUrl);
+      const data = await res.json();
+      return {
+        ids: data.esearchresult.idlist || [],
+        totalCount: parseInt(data.esearchresult.count) || 0
+      };
+    }
+
+    async function fetchPubMedDetails(ids) {
+      if (ids.length === 0) return [];
+      const fetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${ids.join(',')}&retmode=xml&api_key=${PUBMED_API_KEY}`;
+      const res = await fetch(fetchUrl);
+      const xmlText = await res.text();
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+      const articles = xmlDoc.getElementsByTagName("PubmedArticle");
+      
+      const resultsMap = {};
+      
+      for (let i = 0; i < articles.length; i++) {
+        const art = articles[i];
+        const pmid = art.getElementsByTagName("PMID")[0]?.textContent || "";
+        const title = art.getElementsByTagName("ArticleTitle")[0]?.textContent || "無標題";
+        let abstractParts = art.getElementsByTagName("AbstractText");
+        let abstract = Array.from(abstractParts)
+          .map(node => (node.getAttribute("Label") ? `${node.getAttribute("Label")}: ` : "") + node.textContent)
+          .join(" ");
+        const journalObj = art.getElementsByTagName("Journal")[0];
+        const jTitle = journalObj?.getElementsByTagName("ISOAbbreviation")[0]?.textContent || "";
+        const year = journalObj?.getElementsByTagName("Year")[0]?.textContent || 
+                     journalObj?.getElementsByTagName("PubDate")[0]?.getElementsByTagName("Year")[0]?.textContent || "";
+
+        resultsMap[pmid] = { pmid, title, abstract: abstract || "無摘要", source: jTitle, year, url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/` };
+      }
+
+      return ids.map(id => resultsMap[id]).filter(Boolean);
+    }
+
+    const extractTextFromPdf = async (file) => {
+      const arrayBuffer = await file.arrayBuffer();
+      
+      if (!window.pdfjsLib) {
+        const script = document.createElement('script');
+        script.src = PDF_JS_SRC;
+        document.head.appendChild(script);
+        await new Promise((resolve) => script.onload = resolve);
+      }
+      
+      if (window.pdfjsLib && !window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_JS_WORKER_SRC;
+      }
+
+      const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
+      let fullText = '';
+      const maxPages = Math.min(pdf.numPages, 30);
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        fullText += textContent.items.map((item) => item.str).join(' ') + '\n';
+      }
+      return fullText;
+    };
+
+    const SearchTool = ({ geminiKey }) => {
+      const [totalFound, setTotalFound] = useState(0);
+      const [question, setQuestion] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState(null);
+      const [articles, setArticles] = useState([]);
+      const [searchQuery, setSearchQuery] = useState('');
+      const [evidenceSummary, setEvidenceSummary] = useState(null);
+      const [analysisResults, setAnalysisResults] = useState({ category: '', structure: null, meshKeywords: null });
+      const [isStrategyReady, setIsStrategyReady] = useState(false); 
+      const [allIds, setAllIds] = useState([]);
+      const [isLoadingMore, setIsLoadingMore] = useState(false);
+      const [usedConfig, setUsedConfig] = useState(TASK_CONFIGS.search); 
+      
+      const [steps, setSteps] = useState([
+        { name: '問題類型解析', status: 'pending', message: '' },
+        { name: '結構化改寫 (PICO/PENO)', status: 'pending', message: '' },
+        { name: 'MeSH 關鍵字擬定', status: 'pending', message: '' },
+        { name: 'PubMed 檢索 (Best Match)', status: 'pending', message: '' },
+        { name: '文獻評分 (等待使用者選擇)', status: 'pending', message: '' },
+        { name: '生成實證彙總報告', status: 'pending', message: '' },
+      ]);
+      
+      const [expandedPmids, setExpandedPmids] = useState(new Set());
+      const [selectedArticlePmids, setSelectedArticlePmids] = useState(new Set());
+
+      const updateStep = (idx, status, msg) => {
+        setSteps(prev => prev.map((s, i) => i === idx ? { ...s, status, message: msg } : s));
+      };
+
+      const handleAnalyze = async () => {
+        if (!question.trim()) return;
+        setTotalFound(0); setLoading(true); setError(null); setArticles([]); setEvidenceSummary(null);
+        setAnalysisResults({ category: '', structure: null, meshKeywords: null });
+        setSelectedArticlePmids(new Set());
+        setExpandedPmids(new Set());
+        setSearchQuery(''); 
+        setSteps(prev => prev.map(s => ({ ...s, status: 'pending', message: '' })));
+
+        try {
+          const config = TASK_CONFIGS.search;
+          setUsedConfig(config);
+          updateStep(0, 'in-progress', '分析中...');
+          const typeRes = await callGemini(question, "Classify this clinical question: Therapy, Etiology, Prognosis, Diagnosis, or Prediction. Respond ONLY with the keyword.", false, config, geminiKey);
+          const type = String(typeRes).trim();
+          setAnalysisResults(prev => ({ ...prev, category: type }));
+          updateStep(0, 'completed', `類別確定: ${type}`);
+
+          updateStep(1, 'in-progress', '拆解 PICO (English Terms)...');
+          const structPrompt = `
+            Task: Analyze the clinical question into PICO or PENO structure.
+            
+            [Strict Rules]
+            1. LANGUAGE: Use professional English.
+            2. FORMAT: Use ONLY concise nouns or short noun phrases (e.g., "Proton Pump Inhibitors", not "patients taking ppi").
+            3. EMPTY FIELDS: If a component is missing or too general (like "patients"), return an empty string "".
+            4. NO SENTENCES: Do not use verbs or long descriptions.
+            
+            Response must be a valid JSON object: {P, I, C, O} or {P, E, N, O}.
+          `;
+          const struct = await callGemini(question, structPrompt, true, config, geminiKey);
+          setAnalysisResults(prev => ({ ...prev, structure: struct }));
+          updateStep(1, 'completed', '結構改寫完成');
+
+          updateStep(2, 'in-progress', 'MeSH 關鍵字優化中...');
+          const termsPrompt = `
+            From these PICO components: ${JSON.stringify(struct)}, extract the most representative clinical noun for database searching.
+            - If a field is empty, keep it empty.
+            - Example: "Long-term use of PPI" -> "Proton Pump Inhibitors"
+            - Example: "Risk of gastric cancer" -> "Stomach Neoplasms"
+            
+            JSON format: { P: { natural: 'Concise Term', mesh_lookup: 'Concise Term' }, ... }
+          `;
+          const keywords = await callGemini(termsPrompt, "Provide concise English keywords in JSON.", true, config, geminiKey);
+          
+          const queryParts = [];
+          const meshResults = {};
+          
+          for (const [key, val] of Object.entries(keywords)) {
+            if (!val.natural || val.natural.trim() === "" || val.natural.toLowerCase() === "n/a") {
+              meshResults[key] = { natural: "", mesh: null };
+              continue;
+            }
+
+            const officialMeSH = await lookupMeSHTerm(val.mesh_lookup || val.natural);
+            meshResults[key] = { natural: val.natural, mesh: officialMeSH };
+
+            if (['P', 'I', 'E', 'O'].includes(key)) {
+              queryParts.push(officialMeSH ? `(${val.natural} OR "${officialMeSH}"[mesh])` : `(${val.natural})`);
+            }
+          }
+
+          setAnalysisResults(prev => ({ ...prev, meshKeywords: meshResults }));
+          
+          const finalQuery = `(${queryParts.join(' AND ')}) ${STUDY_TYPE_FILTERS[type] || ''}`;
+          setSearchQuery(finalQuery.trim());
+          updateStep(2, 'completed', 'MeSH 對應完畢 (請確認或修改 Query)');
+
+        } catch (err) {
+          setError(err.message);
+        } finally { setLoading(false); }
+      };
+
+      const handleExecuteSearch = async () => {
+        if (!searchQuery.trim()) return;
+        setLoading(true); 
+        setError(null); 
+        setArticles([]); 
+        setAllIds([]);
+        
+        try {
+          updateStep(3, 'in-progress', '正在連線至 PubMed...');
+          
+          const { ids, totalCount } = await fetchPubMedIds(searchQuery);
+          setAllIds(ids);
+          setTotalFound(totalCount);
+
+          if (ids.length > 0) {
+            updateStep(3, 'in-progress', `找到 ${totalCount} 篇，正在抓取摘要...`);
+            
+            const firstBatchIds = ids.slice(0, 10);
+            const details = await fetchPubMedDetails(firstBatchIds);
+            
+            updateStep(3, 'completed', `檢索成功：共 ${totalCount} 篇`);
+            
+            updateStep(4, 'in-progress', 'AI 正在進行相關性評核...');
+            const scored = await scoreArticles(details); 
+            const sorted = [...scored].sort((a, b) => b.relevanceScore - a.relevanceScore);
+            
+            setArticles(sorted);
+            updateStep(4, 'completed', '首頁文獻評估完成 ✌🏻');
+          } else {
+            updateStep(3, 'completed', '找到 0 篇文獻');
+            updateStep(4, 'pending', '無文獻可評估');
+            setError('找不到符合條件的文獻，請嘗試簡化關鍵字 😶');
+          }
+        } catch (err) {
+          console.error("Search Error:", err);
+          setError(`搜尋發生錯誤: ${err.message}`);
+          updateStep(3, 'pending', '檢索失敗');
+        } finally { 
+          setLoading(false); 
+        }
+      };
+
+      const handleLoadMore = async () => {
+        const currentCount = articles.length;
+        const nextBatchIds = allIds.slice(currentCount, currentCount + 10);
+        
+        if (nextBatchIds.length === 0) return;
+
+        setIsLoadingMore(true);
+        try {
+          const details = await fetchPubMedDetails(nextBatchIds);
+          const scored = await scoreArticles(details);
+          
+          setArticles(prev => [...prev, ...scored]);
+        } catch (err) {
+          setError("載入失敗: " + err.message);
+        } finally {
+          setIsLoadingMore(false);
+        }
+      };
+
+      const scoreArticles = async (details) => {
+        return await Promise.all(details.map(async a => {
+          const s = await callGemini(`Question: ${question}\nTitle: ${a.title}\nAbstract: ${a.abstract}`, "Rate relevance 1-5. Respond with integer ONLY (5->Fully aligns,1->irrelevant).", false, usedConfig, geminiKey);
+          return { ...a, relevanceScore: Math.min(5, Math.max(1, parseInt(String(s).replace(/\D/g, '')) || 1)) };
+        }));
+      };
+
+      const handleGenerateSummary = async () => {
+        if (selectedArticlePmids.size === 0) {
+          setError('請至少選擇一篇文獻以生成彙總報告。');
+          return;
+        }
+
+        setLoading(true);
+        setEvidenceSummary(null);
+        setError(null);
+        updateStep(5, 'in-progress', '正在根據選定文獻生成彙總報告...');
+
+        try {
+          const config = TASK_CONFIGS.search;
+          setUsedConfig(config);
+
+          const selectedForSummary = articles.filter(a => selectedArticlePmids.has(a.pmid));
+          
+          const summaryPrompt = `
+            臨床提問: ${question}
+            文獻資料: ${JSON.stringify(selectedForSummary.map(a => ({title: a.title, abstract: a.abstract})))}
+            
+            任務: 撰寫實證彙總。
+            
+            [重要語言規範]
+            1. 藥物名稱或專有名詞：請直接保留英文原名，禁止翻譯為中文。
+            2. 用語本地化：請嚴格使用台灣繁體中文醫療術語，避免中國大陸用語。
+               - 必須將「Intervention」為「介入組」。
+               - 必須將「Baseline」為「基礎」。
+               - 必須將「Subgroup」為「次組」。
+               - 必須將「meta-anaysis」 為「統合分析」，「meta-regression」 為「統合迴歸」。
+            
+            格式要求：請使用繁體中文，段落之間請直接使用換行符號隔開即可，禁止產生 Markdown 語法。
+          `;
+          const summary = await callGemini(summaryPrompt, "Clinical Synthesis Expert.", false, config, geminiKey);
+          
+          setEvidenceSummary(summary);
+          updateStep(5, 'completed', '實證彙總報告生成完成');
+        } catch (err) {
+          setError(err.message);
+          updateStep(5, 'pending', '生成彙總報告失敗');
+        } finally {
+          setLoading(false);
+        }
+      };
+      
+      const toggleArticleSelection = (pmid) => {
+        setSelectedArticlePmids(prev => {
+          const newSet = new Set(prev);
+          if (newSet.has(pmid)) newSet.delete(pmid);
+          else newSet.add(pmid);
+          return newSet;
+        });
+      };
+
+      const toggleAbstract = (pmid) => {
+        setExpandedPmids(prev => {
+          const newSet = new Set(prev);
+          if (newSet.has(pmid)) newSet.delete(pmid);
+          else newSet.add(pmid);
+          return newSet;
+        });
+      };
+
+      const picoInfo = {
+        P: { label: 'Patient / Population', color: 'text-blue-600 border-blue-100' },
+        I: { label: 'Intervention', color: 'text-amber-600 border-amber-100' },
+        E: { label: 'Exposure', color: 'text-amber-600 border-amber-100' },
+        C: { label: 'Comparison', color: 'text-slate-600 border-slate-100' },
+        N: { label: 'Non-exposure', color: 'text-slate-600 border-slate-100' },
+        O: { label: 'Outcome', color: 'text-emerald-600 border-emerald-100' }
+      };
+
+      const safeRender = (val) => {
+        if (typeof val === 'object') return JSON.stringify(val);
+        return String(val || '');
+      };
+
+      const handleExport = () => {
+        let htmlContent = `
+          <div class="section-title">1. 臨床問題與類型 (Question & Type)</div>
+          <div style="background:#fff; padding:15px; border:1px solid #e2e8f0; border-radius:8px; margin-bottom:15px;">
+            <p style="margin-bottom:8px;"><strong>問題 (Question):</strong> ${question}</p>
+            <p><strong>類型 (Type):</strong> <span class="badge badge-green">${analysisResults.category || 'N/A'}</span></p>
+          </div>
+        `;
+        if (analysisResults.structure) {
+          htmlContent += `<div class="section-title">2. 結構化分析 (PICO/PENO Structure)</div>
+          <table style="width:100%; border-collapse:collapse; margin-bottom:15px;">
+            <thead>
+              <tr style="background:#f1f5f9;">
+                <th style="width:15%; padding:8px; border:1px solid #e2e8f0;">項目</th>
+                <th style="width:85%; padding:8px; border:1px solid #e2e8f0;">內容</th>
+              </tr>
+            </thead>
+            <tbody>`;
+          
+          Object.entries(analysisResults.structure).forEach(([k, v]) => {
+            const label = picoInfo[k]?.label || k;
+            htmlContent += `
+              <tr>
+                <td style="padding:8px; border:1px solid #e2e8f0; font-weight:bold; color:#475569;">${k} <span style="font-size:0.8em; font-weight:normal;">(${label})</span></td>
+                <td style="padding:8px; border:1px solid #e2e8f0;">${safeRender(v)}</td>
+              </tr>`;
+          });
+          htmlContent += `</tbody></table>`;
+        }
+        if (analysisResults.meshKeywords) {
+          htmlContent += `<div class="section-title">3. MeSH 關鍵字對照 (MeSH Mapping)</div>
+          <table style="width:100%; border-collapse:collapse; margin-bottom:15px;">
+            <thead>
+              <tr style="background:#f1f5f9;">
+                <th style="width:10%; padding:8px; border:1px solid #e2e8f0;">PICO</th>
+                <th style="width:40%; padding:8px; border:1px solid #e2e8f0;">自然語言 (Natural)</th>
+                <th style="width:50%; padding:8px; border:1px solid #e2e8f0;">MeSH 詞彙</th>
+              </tr>
+            </thead>
+            <tbody>`;
+          
+          Object.entries(analysisResults.meshKeywords).forEach(([k, v]) => {
+            const meshDisplay = v.mesh 
+              ? `<span style="color:#166534; font-weight:bold; background:#dcfce7; padding:2px 6px; border-radius:4px;">${v.mesh}</span>` 
+              : `<span style="color:#94a3b8; font-style:italic;">No Match</span>`;
+              
+            htmlContent += `
+              <tr>
+                <td style="padding:8px; border:1px solid #e2e8f0; text-align:center; font-weight:bold;">${k}</td>
+                <td style="padding:8px; border:1px solid #e2e8f0;">${v.natural}</td>
+                <td style="padding:8px; border:1px solid #e2e8f0;">${meshDisplay}</td>
+              </tr>`;
+          });
+          htmlContent += `</tbody></table>`;
+        }
+        if (searchQuery) {
+          htmlContent += `<div class="section-title">4. PubMed 檢索策略 (Search Strategy)</div>
+          <div style="background:#0f172a; color:#a5b4fc; padding:15px; border-radius:8px; font-family:monospace; font-size:0.85rem; word-break:break-all; margin-bottom:20px;">
+            ${searchQuery}
+          </div>`;
+        }
+        if (articles.length > 0) {
+          htmlContent += `<div class="section-title">5. PubMed 檢索結果列表 (Search Results)</div>
+          
+          <div style="margin-bottom:10px; padding:10px; background:#f0f9ff; border-left:4px solid #0ea5e9; color:#0369a1;">
+            <strong>資料庫檢索總篇數：</strong> ${totalFound.toLocaleString()} 篇 <br/>
+            <span style="font-size:0.85em; color:#64748b;">(下方列表顯示 Best Match 排序之前 ${articles.length} 篇)</span>
+          </div>
+
+          <table style="width:100%; border-collapse:collapse; margin-bottom:20px; font-size:0.9rem;">
+            <thead>
+              <tr style="background:#f1f5f9;">
+                <th style="width:5%; padding:8px; border:1px solid #e2e8f0;">#</th>
+                <th style="width:15%; padding:8px; border:1px solid #e2e8f0;">PMID</th>
+                <th style="width:55%; padding:8px; border:1px solid #e2e8f0;">標題 (Title)</th>
+                <th style="width:25%; padding:8px; border:1px solid #e2e8f0;">出處 (Source)</th>
+              </tr>
+            </thead>
+            <tbody>`;
+          
+          articles.forEach((a, idx) => {
+            const isSelected = selectedArticlePmids.has(a.pmid);
+            const rowStyle = isSelected ? 'background-color:#eff6ff;' : '';
+            const checkMark = isSelected ? '<span style="color:#2563eb; font-weight:bold;">✓</span>' : '';
+
+            htmlContent += `
+              <tr style="${rowStyle}">
+                <td style="padding:8px; border:1px solid #e2e8f0; text-align:center;">${idx + 1}</td>
+                <td style="padding:8px; border:1px solid #e2e8f0;">
+                  <a href="${a.url}" target="_blank" style="color:#2563eb; text-decoration:none;">${a.pmid}</a>
+                  ${checkMark}
+                </td>
+                <td style="padding:8px; border:1px solid #e2e8f0; font-weight:bold; color:#1e293b;">${a.title}</td>
+                <td style="padding:8px; border:1px solid #e2e8f0; color:#64748b; font-size:0.85em;">${a.source} ${a.year}</td>
+              </tr>`;
+          });
+          htmlContent += `</tbody></table>`;
+        }
+        if (evidenceSummary) {
+          htmlContent += `<div class="section-title">6. 實證彙總報告 (Evidence Summary)</div>
+          
+          <div style="background:#fff; padding:20px; border:1px solid #cbd5e1; border-radius:8px; line-height:1.8; color:#334155; white-space: pre-wrap; font-size:1rem; margin-bottom:20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+            ${evidenceSummary}
+          </div>
+
+          <h4 style="margin:0 0 10px 0; color:#475569; border-bottom:1px solid #e2e8f0; padding-bottom:5px;">本報告參考文獻 (References used in this summary)</h4>
+          <ul style="font-size:0.9rem; color:#475569; padding-left:20px;">`;
+
+          const selectedArticles = articles.filter(a => selectedArticlePmids.has(a.pmid));
+          
+          if (selectedArticles.length > 0) {
+            selectedArticles.forEach(a => {
+               htmlContent += `<li style="margin-bottom:8px;">
+                 <strong>${a.title}</strong><br/>
+                 <span style="font-style:italic;">${a.source}. ${a.year}</span> (PMID: ${a.pmid})
+               </li>`;
+            });
+          } else {
+            htmlContent += `<li>(未特別指定參考文獻)</li>`;
+          }
+          
+          htmlContent += `</ul>`;
+        }
+
+        generatePDFReport("文獻檢索報告", usedConfig, htmlContent);
+      };
+
+      return (
+        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="bg-white p-8 rounded-[2rem] shadow-xl border border-slate-100">
+            <h2 className="text-2xl font-black mb-6 flex items-center gap-2"><Search className="text-indigo-600" /> 臨床問題檢索</h2>
+            <textarea className="w-full p-6 bg-slate-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all text-lg h-32 leading-relaxed" placeholder="請輸入並盡可能詳述您的臨床問題，但不需輸入個人機敏性資訊，系統不會儲存任何您輸入的資訊。" value={question} onChange={e => setQuestion(e.target.value)} disabled={loading} />
+            <button onClick={handleAnalyze} disabled={loading || !question.trim()} className="w-full mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95">
+      {loading && steps[2].status !== 'completed' ? <Loader2 className="animate-spin" /> : <Play className="w-5 h-5 fill-current" />}
+      {loading && steps[2].status !== 'completed' ? 'AI 正在解析問題與擬定策略...' : '啟動 AI 分析與擬定關鍵字'}
+    </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <div className="lg:col-span-4 space-y-6">
+              <div className="bg-white p-6 rounded-[1.5rem] border border-slate-100 shadow-sm sticky top-24">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2"><Activity className="w-4 h-4 text-indigo-500" /> 工作流狀態</h3>
+                <div className="space-y-1">
+                  {steps.map((s, i) => (
+                    <div key={i} className={`flex items-start gap-3 py-3 border-b border-slate-50 last:border-0 ${s.status === 'completed' ? 'text-indigo-600' : s.status === 'in-progress' ? 'text-blue-500 font-bold' : 'text-slate-300'}`}>
+                      {s.status === 'completed' ? <CheckCircle className="w-5 h-5" /> : s.status === 'in-progress' ? <Loader2 className="w-5 h-5 animate-spin" /> : <div className="w-5 h-5 rounded-full border-2 border-slate-100" />}
+                      <div><p className="text-[11px] font-black uppercase tracking-tight">{s.name}</p><p className="text-[10px] italic opacity-80">{s.message}</p></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-8 space-y-8">
+              {error && <div className="bg-rose-50 border-2 border-rose-100 p-6 rounded-2xl text-rose-700 font-bold flex items-center gap-3"><AlertCircle /> {error}</div>}
+
+              {analysisResults.structure && (
+                 <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden">
+                   <div className="bg-slate-50 px-8 py-4 border-b border-slate-100 flex items-center justify-between">
+                    <h3 className="text-sm font-black text-slate-800 flex items-center gap-2"><Layers className="w-4 h-4 text-indigo-500" /> 臨床問題結構化分析 (PICO/PENO)</h3>
+                    <span className="text-[10px] font-black bg-indigo-100 text-indigo-600 px-3 py-1 rounded-full uppercase">{String(analysisResults.category)}</span>
+                  </div>
+                  <div className="p-8 space-y-3">
+                    {Object.entries(analysisResults.structure).map(([k, v]) => {
+                      const info = picoInfo[k] || { label: k, color: 'text-indigo-600 border-indigo-100' };
+                      return (
+                        <div key={k} className="flex items-start gap-4 text-sm bg-slate-50 p-4 rounded-xl border border-slate-100 transition-all hover:bg-slate-100/50">
+                          <div className={`w-8 h-8 flex-shrink-0 bg-white rounded-full flex items-center justify-center font-black border shadow-sm ${info.color}`}>
+                            {k}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{info.label}</span>
+                            </div>
+                            <p className="text-sm font-bold text-slate-800 leading-relaxed whitespace-pre-wrap">
+                              {typeof v === 'object' ? JSON.stringify(v) : (v || 'N/A')}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {analysisResults.meshKeywords && (
+                 <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
+                 <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2"><Database className="w-4 h-4" /> MeSH 關鍵字對照結果</h4>
+                 <div className="space-y-3">
+                   {Object.entries(analysisResults.meshKeywords).map(([key, data]) => (
+                     <div key={key} className="flex items-center gap-4 text-sm bg-slate-50 p-3 rounded-xl border border-slate-100">
+                       <div className="w-8 h-8 flex-shrink-0 bg-white rounded-full flex items-center justify-center font-black text-indigo-600 border border-indigo-100 shadow-sm">{key}</div>
+                       <div className="flex-1 flex items-center gap-3">
+                         <span className="font-bold text-slate-700">{String(data.natural)}</span>
+                         <ChevronRight className="w-4 h-4 text-slate-300" />
+                         <span className={data.mesh ? "text-emerald-600 font-bold" : "text-slate-400 italic"}>{data.mesh ? `${String(data.mesh)} [Mesh]` : "無對應 MeSH"}</span>
+                       </div>
+                     </div>
+                   ))}
+                 </div>
+                 {searchQuery && (
+      <div className="mt-8 animate-in fade-in zoom-in duration-300">
+        <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Terminal className="w-3 h-3" /> 檢索關鍵字 (可手動修改)
+          </div>
+        </h4>
+        
+        <div className="bg-slate-900 p-5 rounded-2xl border-2 border-slate-700 focus-within:border-indigo-500 transition-colors">
+          <textarea 
+            className="w-full bg-transparent text-[13px] font-mono text-indigo-300 break-all leading-relaxed focus:outline-none resize-y min-h-[80px]"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            disabled={loading}
+          />
+        </div>
+
+        <button 
+          onClick={handleExecuteSearch} 
+          disabled={loading || !searchQuery.trim()} 
+          className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95 disabled:bg-slate-300"
+        >
+          {loading && steps[3].status === 'in-progress' ? <Loader2 className="animate-spin" /> : <Search className="w-5 h-5" />}
+          {loading && steps[3].status === 'in-progress' ? '正在 PubMed 檢索中...' : '確認關鍵字並執行 PubMed 檢索'}
+        </button>
+      </div>
+    )}
+               </div>
+              )}
+
+              {evidenceSummary && (
+               <div className="bg-indigo-900">
+                <div className="bg-white/10 backdrop-blur-sm p-8 rounded-[1.5rem] border border-white/10">
+                 <p className="text-indigo-50 leading-relaxed text-lg font-medium whitespace-pre-wrap">{String(evidenceSummary)}</p>
+                  <div className="mt-6 flex justify-end">
+                    <button onClick={handleExport} className="flex items-center gap-2 bg-white text-indigo-900 px-4 py-2 rounded-lg font-bold text-sm hover:bg-indigo-50 transition-colors shadow-lg">
+                      <Download className="w-4 h-4" /> 匯出報告 PDF
+                    </button>
+                  </div>
+                </div>
+               </div>
+              )}
+
+              {articles.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between px-4">
+                    <h2 className="text-xl font-black text-slate-800 tracking-tight">
+                      PubMed 檢索文獻列表 (Best Match)
+                    </h2>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black bg-slate-200 text-slate-600 px-3 py-1 rounded-full uppercase">
+                        資料庫總計: {totalFound.toLocaleString()} 篇
+                      </span>
+                      <span className="text-[10px] font-black bg-indigo-100 text-indigo-600 px-3 py-1 rounded-full uppercase">
+                        已分析 {articles.length} 篇
+                      </span>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={handleGenerateSummary}
+                    disabled={loading || selectedArticlePmids.size === 0}
+                    className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                  >
+                    {loading && steps[5].status === 'in-progress' ? <Loader2 className="animate-spin" /> : <ClipboardList className="w-5 h-5 fill-current" />}
+                    {loading && steps[5].status === 'in-progress' ? 'AI 正在生成彙總報告...' : `生成實證彙總報告 (已選擇 ${selectedArticlePmids.size} 篇)`}
+                  </button>
+        
+                  {articles.map((a) => {
+                    const isExpanded = expandedPmids.has(a.pmid);
+                    const isSelected = selectedArticlePmids.has(a.pmid);
+                    
+                    let citationString = safeRender(a.source);
+                    const dateParts = [];
+                    if (a.year) dateParts.push(safeRender(a.year));
+                    if (a.month) dateParts.push(safeRender(a.month));
+                    if (a.day) dateParts.push(safeRender(a.day));
+                    if (dateParts.length > 0) citationString += (citationString ? '. ' : '') + dateParts.join(' ');
+                    
+                    const journalIssueAndArticleIdParts = [];
+                    if (a.volume) journalIssueAndArticleIdParts.push(safeRender(a.volume));
+                    if (a.issue) journalIssueAndArticleIdParts.push(`(${safeRender(a.issue)})`);
+                    let articleIdentifier = a.pii || a.doi || a.pmid || '';
+                    if (journalIssueAndArticleIdParts.length > 0 || articleIdentifier) {
+                       let journalRefString = journalIssueAndArticleIdParts.join('');
+                       if (articleIdentifier) journalRefString += `:${articleIdentifier}`;
+                       if (journalRefString) citationString += (citationString ? ';' : '') + journalRefString;
+                    }
+                    if (!citationString.endsWith('.')) citationString += '.';
+
+                    return (
+                      <div key={a.pmid} 
+                           className={`bg-white rounded-2xl border ${isSelected ? 'border-indigo-300 bg-indigo-50' : 'border-slate-100'} shadow-sm p-6 transition-all hover:shadow-md hover:border-indigo-100`}
+                      >
+                        <div className="flex justify-between items-start gap-4 mb-3">
+                          <div className="flex-1">
+                            <h3 className="text-lg font-bold text-slate-900 leading-snug mb-2">{safeRender(a.title)}</h3>
+                            
+                            <div className="flex items-start gap-2 text-sm text-slate-600 font-medium mb-1">
+                               <BookOpen className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
+                               <span>{citationString}</span>
+                            </div>
+                            
+                            <div className="text-xs font-bold text-slate-400 pl-6 mb-3">
+                               PMID: {safeRender(a.pmid)}
+                            </div>
+                          </div>
+                          
+                          <div className="flex flex-col items-end gap-2">
+                            <label className="flex items-center cursor-pointer">
+                              <input 
+                                type="checkbox" 
+                                checked={isSelected} 
+                                onChange={() => toggleArticleSelection(a.pmid)}
+                                className="hidden"
+                              />
+                              <span className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all 
+                                ${isSelected ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-300 text-transparent hover:border-indigo-400'}`}>
+                                {isSelected && <CheckCircle2 className="w-4 h-4" />}
+                              </span>
+                              <span className="ml-2 text-sm font-bold text-slate-700 select-none">選擇</span>
+                            </label>
+
+                            <div className={`px-3 py-1 rounded-full text-[11px] font-black border shrink-0 ${a.relevanceScore >= 4 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-slate-50 text-slate-500 border-slate-100'}`}>
+                              AI 相關性: {a.relevanceScore}/5
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-4 mb-4 pl-6">
+                          <a href={a.url} target="_blank" rel="noreferrer" className="text-indigo-600 text-[11px] font-black uppercase tracking-widest flex items-center gap-1 hover:underline">
+                            View on PubMed <ExternalLink className="w-3 h-3" />
+                          </a>
+                          <a 
+                            href={`https://pubmed.ncbi.nlm.nih.gov/?linkname=pubmed_pubmed&from_uid=${a.pmid}`} 
+                            target="_blank" 
+                            rel="noreferrer" 
+                            className="text-emerald-600 text-[11px] font-black uppercase tracking-widest flex items-center gap-1 hover:underline border-l pl-4 border-slate-200"
+                          >
+                            相似文章 (Related Articles) <FileSearch className="w-3 h-3" />
+                          </a>
+                        </div>
+
+                        <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                          <button 
+                            onClick={() => toggleAbstract(a.pmid)} 
+                            className="w-full flex items-center justify-between text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors mb-2"
+                          >
+                            <span className="uppercase tracking-widest">Abstract</span>
+                            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                          </button>
+                          <p className={`text-sm text-slate-700 leading-relaxed transition-all duration-300 ${isExpanded ? '' : 'line-clamp-2'}`}>
+                            {safeRender(a.abstract)}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {allIds.length > articles.length && (
+      <div className="pt-8 pb-12 flex justify-center">
+        <button 
+          onClick={handleLoadMore}
+          disabled={isLoadingMore}
+          className="flex items-center gap-2 px-8 py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-black rounded-2xl hover:bg-indigo-50 hover:border-indigo-200 transition-all shadow-sm disabled:opacity-50"
+        >
+          {isLoadingMore ? (
+            <Loader2 className="w-5 h-5 animate-spin" />
+          ) : (
+            <RefreshCw className="w-5 h-5" />
+          )}
+          {isLoadingMore ? '正在讀取後續文獻...' : `載入更多文獻 (剩餘 ${allIds.length - articles.length} 篇)`}
+        </button>
+      </div>
+    )}
+
+                  <div className="mt-12 pt-8 border-t border-slate-200 flex flex-wrap justify-center gap-x-8 gap-y-4 text-slate-400 font-medium pb-10">
+                    <div className="flex items-center gap-2 text-sm">
+                      <Zap className="w-4 h-4 text-indigo-400" />
+                      <span>Model: <span className="text-slate-600 font-bold">{usedConfig.model}</span></span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <Hash className="w-4 h-4 text-indigo-400" />
+                      <span>Version: <span className="text-slate-600 font-bold">{APP_VERSION}</span></span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <Target className="w-4 h-4 text-indigo-400" />
+                      <span>Top-P: <span className="text-slate-600 font-bold">{usedConfig.topP}</span></span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <Activity className="w-4 h-4 text-indigo-400" />
+                      <span>Temp: <span className="text-slate-600 font-bold">{usedConfig.temperature}</span></span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const AppraisalTool = ({ geminiKey }) => {
+      const [step, setStep] = useState(1);
+      const [selectedType, setSelectedType] = useState(null);
+      const [file, setFile] = useState(null);
+      const [aiResult, setAiResult] = useState(null);
+      const [humanAnswers, setHumanAnswers] = useState({});
+      const [finalSummary, setFinalSummary] = useState(null);
+
+      const [userAppraisals, setUserAppraisals] = useState({});
+
+    const handleUserAppraisalChange = (id, field, value) => {
+      setUserAppraisals(prev => ({
+        ...prev,
+        [id]: {
+          ...prev[id],
+          [field]: value
+        }
+      }));
+    };
+      
+      const [isLoading, setIsLoading] = useState(false);
+      const [isReappraising, setIsReappraising] = useState(false);
+      
+      const [error, setError] = useState('');
+      const [usedConfig, setUsedConfig] = useState(TASK_CONFIGS.appraisal);
+
+      const [reappraisalSelection, setReappraisalSelection] = useState(new Set());
+
+      const handleInitialAiAppraisal = async () => {
+        if (!selectedType || !file) return;
+        setIsLoading(true); setStep(3); setError('');
+        
+        try {
+          const config = TASK_CONFIGS.appraisal;
+          setUsedConfig(config);
+          const text = await extractTextFromPdf(file);
+          const knowledge = KNOWLEDGE_BASE[selectedType];
+          
+          const prompt = `
+            你的任務是對醫學文獻進行「方法學品質評讀」。
+            
+            研究類型：${knowledge.title}
+            評讀標準 (AI Scope)：${knowledge.llm_scope}
+            文獻內容：${text.substring(0, 35000)}
+
+            [重要過濾規則]
+            1. 請**嚴格只針對**評讀標準中有「數字標號」或「英數混合標號」的項目建立評讀結果。
+            2. 請**忽略**像 "Section A" 這樣的段落標題。
+            3. 每個標號 (如 6.1, 7 等) 只能對應「唯一一個」JSON 物件。若有多個考量點，請全部合併寫在同一個 evidence 裡，絕對不可產生多個相同 id 的物件！
+
+            [重要語言規範]
+            1. 藥物名稱或專有名詞：請直接保留英文原名，禁止翻譯為中文。
+            2. 用語本地化：請嚴格使用台灣繁體中文醫療術語，避免中國大陸用語。
+               - 必須將「Intervention」為「介入組」。
+               - 必須將「Baseline」為「基礎」。
+               - 必須將「Subgroup」為「次組」。
+               - 必須將「meta-anaysis」 為「統合分析」，「meta-regression」 為「統合迴歸」。
+            
+            格式要求：請使用繁體中文，段落之間請直接使用換行符號隔開即可，禁止使用 Markdown 語法。
+
+            請回傳 JSON 格式，嚴格遵守以下結構：
+            {
+                "basic_info": { 
+                    "title": "文獻標題 (原文)", 
+                    "authors": "第一作者 et al.", 
+                    "year": "出版年份", 
+                    "objective": "研究目的 (請用繁體中文精簡摘要)" 
+                },
+                "methodology_table": [
+                    { 
+                      "id": "題號 (如 1, 2, 3a)", 
+                      "question": "題目簡述", 
+                      "result": "Yes/No/CT", 
+                      "evidence": "請用繁體中文，針對文獻內容具體說明判斷理由 (例如：文獻在第x頁提到了...所以符合/不符合)。" 
+                    }
+                ],
+                "methodology_summary": "請針對研究設計嚴謹度撰寫短評 (繁體中文)。"
+            }
+          `;
+
+          const res = await callGemini(prompt, "你是一名嚴謹的實證醫學審查員，請依據證據回答。", true, config, geminiKey);
+          setAiResult(res);
+          setReappraisalSelection(new Set()); 
+          
+          const initialHumanState = {};
+          knowledge.human_scope.forEach(q => initialHumanState[q.id] = null);
+          setHumanAnswers(initialHumanState);
+          
+          setStep(4);
+        } catch (e) {
+          setError(e.message);
+          setStep(2);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      const handleReappraise = async () => {
+        if (reappraisalSelection.size === 0) return;
+        setIsReappraising(true);
+        
+        try {
+            const text = await extractTextFromPdf(file);
+            const itemsToReappraise = aiResult.methodology_table.filter(item => reappraisalSelection.has(item.id));
+            
+            const prompt = `
+                任務：針對特定的評讀項目進行「重新評估 (Re-evaluation)」。
+                使用者認為目前的評讀結果不夠精確，請仔細重新閱讀文獻內容，針對下列題目尋找更有力的證據。
+
+                文獻內容：${text.substring(0, 35000)}
+                
+                需要重新評讀的項目：
+                ${JSON.stringify(itemsToReappraise.map(i => ({id: i.id, question: i.question})))}
+
+                [重要語言規範]
+               1. 藥物名稱或專有名詞：請直接保留英文原名，禁止翻譯為中文。
+               2. 用語本地化：請嚴格使用台灣繁體中文醫療術語，避免中國大陸用語。
+               - 必須將「Intervention」為「介入組」。
+               - 必須將「Baseline」為「基礎」。
+               - 必須將「Subgroup」為「次組」。
+               - 必須將「meta-anaysis」 為「統合分析」，「meta-regression」 為「統合迴歸」。
+
+                
+                請回傳 JSON 陣列 (Array)，格式如下：
+                [
+                    { 
+                      "id": "題號 (必須對應)", 
+                      "result": "Yes/No/CT (重新判斷後的結果)", 
+                      "evidence": "更詳盡、精確的繁體中文證據說明，請引用具體內容。" 
+                    }
+                ]
+            `;
+
+            const newResults = await callGemini(prompt, "你是一名專注細節的資深審查員。", true, usedConfig, geminiKey);
+            
+            setAiResult(prev => {
+                const newTable = prev.methodology_table.map(row => {
+                    const updatedItem = newResults.find(r => r.id === row.id);
+                    return updatedItem ? { ...row, result: updatedItem.result, evidence: updatedItem.evidence } : row;
+                });
+                return { ...prev, methodology_table: newTable };
+            });
+
+            setReappraisalSelection(new Set());
+
+        } catch (e) {
+            alert("重新評讀失敗: " + e.message);
+        } finally {
+            setIsReappraising(false);
+        }
+      };
+
+      const toggleReappraisalItem = (id) => {
+        setReappraisalSelection(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(id)) newSet.delete(id);
+            else newSet.add(id);
+            return newSet;
+        });
+      };
+
+      const handleHumanInput = (id, value) => {
+        setHumanAnswers(prev => ({ ...prev, [id]: value }));
+      };
+
+    const submitScoresToSheet = async () => {
+      if (selectedType !== 'sr_rct') return;
+
+      const scriptUrl = "https://script.google.com/macros/s/AKfycbxJipG7GHsQdbE7Vjo-6pQTYrReDiN0x2Z1cNGbo7GG45-IQPj1L5jZIbsmGNYLmHKD2A/exec"; 
+
+      const payload = {
+        '1': userAppraisals['1']?.score || '',
+        '2': userAppraisals['2']?.score || '',
+        '3a': userAppraisals['3a']?.score || '',
+        '3b': userAppraisals['3b']?.score || '',
+        '3c': userAppraisals['3c']?.score || '',
+        '3d': userAppraisals['3d']?.score || '',
+        '4': userAppraisals['4']?.score || '',
+        '5a': userAppraisals['5a']?.score || '',
+        '5b': userAppraisals['5b']?.score || '',
+        '6': userAppraisals['6']?.score || '',
+        '6.1': userAppraisals['6.1']?.score || '',
+        '6.2': userAppraisals['6.2']?.score || '',
+        '7.1': userAppraisals['7.1']?.score || '',
+        '7.2': userAppraisals['7.2']?.score || '',
+        '8': userAppraisals['8']?.score || ''
+      };
+
+      try {
+        await fetch(scriptUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload)
+        });
+        console.log("資料已成功傳送到 GAS 緩衝區 ✌🏻");
+      } catch (e) {
+        console.error("傳送至 Google Sheet 失敗 🥲", e);
+      }
+    };
+      
+      
+      const handleGenerateFinalReport = async () => {
+        const unanswered = Object.values(humanAnswers).some(val => val === null);
+        if (unanswered) {
+          alert("請完成所有「在地化適用性」評估問題後再生成報告。");
+          return;
+        }
+
+        setIsLoading(true);
+        try {
+          const knowledge = KNOWLEDGE_BASE[selectedType];
+          
+          const synthesisPrompt = `
+            任務：生成最終實證評讀摘要 (Final Appraisal Summary)。
+            
+            [基本資訊]
+            ${JSON.stringify(aiResult.basic_info)}
+
+            [資料來源 1: AI 方法學評估]
+            ${JSON.stringify(aiResult.methodology_table)}
+            
+            [資料來源 2: 人類專家在地化評估]
+            ${JSON.stringify(knowledge.human_scope.map(q => ({
+                question: q.question,
+                expert_judgment: humanAnswers[q.id]
+            })))}
+
+            [重要語言規範]
+            1. 藥物名稱或專有名詞：請直接保留英文原名，禁止翻譯為中文。
+            2. 用語本地化：請嚴格使用台灣繁體中文醫療術語，避免中國大陸用語。
+               - 必須將「Intervention」為「介入組」。
+               - 必須將「Baseline」為「基礎」。
+               - 必須將「Subgroup」為「次組」。
+               - 必須將「meta-anaysis」 為「統合分析」，「meta-regression」 為「統合迴歸」。
+            
+            格式要求：請使用繁體中文，段落之間請直接使用換行符號隔開即可，禁止使用 Markdown 語法。
+
+            [輸出格式要求]
+            請回傳一個標準的 JSON 物件 (嚴禁使用 Markdown 標記)，包含以下四個欄位 (Value 請使用繁體中文)：
+            {
+              "positive": "列出此研究設計優良、結果可信、或專家認為適用於臨床的具體理由。",
+              "negative": "列出研究限制、偏差風險、或專家認為不適用於臨床的具體理由。",
+              "unknown": "列出報告中未提及、資訊不足或無法判斷的部分。",
+              "conclusion": "綜合以上，給出是否推薦改變臨床實務的最終具體建議。"
+            }
+          `;
+
+          const finalRes = await callGemini(synthesisPrompt, "你是一名資深的臨床決策顧問，請輸出嚴謹的 JSON。", true, usedConfig, geminiKey);
+          setFinalSummary(finalRes);
+          setStep(5);
+          await submitScoresToSheet();
+          alert("評讀完成！資料已同步至雲端資料庫。👊🏻");
+        } catch (e) {
+          setError("生成最終報告失敗: " + e.message);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      const renderBadge = (res) => {
+        if (!res) return <span className="text-slate-300">-</span>;
+        const r = String(res).toLowerCase();
+        let cls = 'bg-slate-100 text-slate-700 border-slate-200';
+        if (r.includes('yes')) cls = 'bg-emerald-100 text-emerald-700 border-emerald-200';
+        else if (r.includes('no')) cls = 'bg-rose-100 text-rose-700 border-rose-200';
+        else if (r.includes('ct') || r.includes('can')) cls = 'bg-amber-100 text-amber-700 border-amber-200';
+        
+        return <span className={`px-2 py-0.5 rounded text-xs font-bold border ${cls}`}>{res}</span>;
+      };
+
+      const handleExportCombined = () => {
+        let html = `<div class="section-title">0. 文獻基本資訊 (Basic Info)</div>
+                    <div style="background:#f8fafc; padding:15px; border:1px solid #e2e8f0; border-radius:8px; margin-bottom:20px;">
+                        <p><strong>Title:</strong> ${aiResult.basic_info.title}</p>
+                        <p><strong>Authors:</strong> ${aiResult.basic_info.authors} (${aiResult.basic_info.year})</p>
+                        <p><strong>Objective:</strong> ${aiResult.basic_info.objective}</p>
+                    </div>`;
+
+        html += `<div class="section-title">1. AI 方法學評讀與使用者最終判斷 (Methodology & Expert Judgment)</div>`;
+        html += `<table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+                 <thead><tr style="background:#f1f5f9;">
+                   <th style="width:5%; padding:8px; border:1px solid #e2e8f0;">題號</th>
+                   <th style="width:25%; padding:8px; border:1px solid #e2e8f0;">題目</th>
+                   <th style="width:10%; padding:8px; border:1px solid #e2e8f0;">AI 結果</th>
+                   <th style="width:30%; padding:8px; border:1px solid #e2e8f0;">AI 評讀原因</th>
+                   <th style="width:30%; padding:8px; border:1px solid #e2e8f0;">使用者的最終判斷</th>
+                 </tr></thead><tbody>`;
+                 
+        aiResult.methodology_table.forEach(row => {
+          const userAppraisal = userAppraisals[row.id] || {};
+          const userScore = userAppraisal.score ? `<span style="color:#4f46e5; font-weight:bold;">${userAppraisal.score} 分</span>` : '<span style="color:#94a3b8;">未評分</span>';
+          const userReason = userAppraisal.reason ? userAppraisal.reason.replace(/\n/g, '<br/>') : '<span style="color:#94a3b8;">無填寫理由</span>';
+
+          html += `<tr>
+                    <td style="padding:8px; border:1px solid #e2e8f0; text-align:center;">${row.id}</td>
+                    <td style="padding:8px; border:1px solid #e2e8f0;">${row.question}</td>
+                    <td style="padding:8px; border:1px solid #e2e8f0; text-align:center;">${renderBadge(row.result)?.props?.children || row.result}</td>
+                    <td style="padding:8px; border:1px solid #e2e8f0; color:#475569; font-size:0.9em; vertical-align:top;">${row.evidence}</td>
+                    <td style="padding:8px; border:1px solid #e2e8f0; color:#334155; font-size:0.9em; vertical-align:top; background:#f8fafc;">
+                        <div style="margin-bottom:4px;"><strong>使用者認同度：</strong> ${userScore}</div>
+                        <div><strong>使用者理由：</strong><br/>${userReason}</div>
+                    </td>
+                   </tr>`;
+        });
+        html += `</tbody></table>`;
+
+        if (finalSummary) {
+            html += `<div class="section-title">3. 最終整合摘要 (Synthesis)</div>`;
+            html += `<div style="margin-bottom:10px; padding:10px; background-color:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;">
+                        <strong style="color:#15803d;">[Positive]</strong><br/>${(finalSummary.positive || '').replace(/\n/g, '<br/>')}
+                     </div>`;
+            html += `<div style="margin-bottom:10px; padding:10px; background-color:#fef2f2; border:1px solid #fecaca; border-radius:8px;">
+                        <strong style="color:#b91c1c;">[Negative]</strong><br/>${(finalSummary.negative || '').replace(/\n/g, '<br/>')}
+                     </div>`;
+            html += `<div style="margin-bottom:10px; padding:10px; background-color:#fffbeb; border:1px solid #fde68a; border-radius:8px;">
+                        <strong style="color:#b45309;">[Unknowns]</strong><br/>${(finalSummary.unknown || '').replace(/\n/g, '<br/>')}
+                     </div>`;
+            html += `<div style="margin-top:15px; padding:15px; background-color:#0f766e; color:white; border-radius:8px;">
+                        <strong>[Overall Conclusion]</strong><br/>${(finalSummary.conclusion || '').replace(/\n/g, '<br/>')}
+                     </div>`;
+        }
+
+        generatePDFReport(`Hybrid CASP Appraisal: ${KNOWLEDGE_BASE[selectedType].title}`, usedConfig, html);
+      };
+
+      const [drawingPrompt, setDrawingPrompt] = useState('');
+    const [isRefining, setIsRefining] = useState(false);
+
+    const handleGenerateDrawingPrompt = async () => {
+      if (!finalSummary || !aiResult) return;
+      setIsRefining(true);
+      
+      try {
+        const refineSystem = "你是一名資訊設計師。請將醫學評讀結果精煉成簡短、有力的繁體中文片語（每項不超過 15 字），適合放入 3D 等角投影資訊圖表中。";
+        const refinePrompt = `
+          標題：${aiResult.basic_info.title}
+          研究問題：${aiResult.basic_info.objective}
+          優點：${finalSummary.positive}
+          缺點：${finalSummary.negative}
+          結論：${finalSummary.conclusion}
+          
+          請回傳 JSON 格式：
+          {
+            "refined_objective": "精煉後的問題",
+            "refined_pros": ["優點1", "優點2", ...],
+            "refined_cons": ["缺點1", "缺點2", ...],
+            "refined_conclusion": "精煉後的結論"
+          }
+        `;
+        
+        const refinedData = await callGemini(refinePrompt, refineSystem, true, usedConfig, geminiKey);
+
+        const finalPrompt = `
+整體設計：
+調性：「資訊感、趣味感、清晰明快、專業、現代。」
+視覺識別：
+背景色：「淺灰色，或淡淡的網格。」
+文字色：「#FF6B6B（紅色）」
+強調色：「#4ECDC4（藍綠色）」、「#FFE66D（黃色）」、「#1A535C（深藍色）」
+圖像風格：  
+特徵：「使用 高度精細 的 3D 等角投影向量插圖，聚焦於豐富的資料視覺化。」  
+形狀：「等角投影圖表、圓餅圖、流程圖連接線、模組化平台。」  
+意象：「微型人物 (進行具體操作與演示)、漂浮平台、圖示。」  
+構圖：「結構化流程、相互連結層次分明的元素、清晰的路徑。」  
+字體排版：
+標題：「圓潤的無襯線字體。」
+風格：「清楚的階層結構與標籤，標題下有詳細的子彈點說明。」
+中文請使用完全支援繁體中文的字體（例如 Google Fonts）以最高精度呈現。
+
+尺寸：16:9、解析度為 4K。
+=============================
+標題：${aiResult.basic_info.title}
+內容規劃與圖像指令：
+1. 問題 (起點平台)：${refinedData.refined_objective}
+======================
+2. 優點 (左側分支)：${refinedData.refined_pros.join('、')}
+======================
+3. 缺點 (右側分支)：${refinedData.refined_cons.join('、')}
+======================
+4. 結論 (底部匯聚平台)：${refinedData.refined_conclusion}
+        `;
+
+        setDrawingPrompt(finalPrompt);
+      } catch (e) {
+        alert("生成繪圖 Prompt 失敗：" + e.message);
+      } finally {
+        setIsRefining(false);
+      }
+    };
+
+      return (
+        <div className="max-w-5xl mx-auto py-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {error && (
+                <div className="mb-6 bg-rose-50 border-2 border-rose-100 p-4 rounded-xl text-rose-700 font-bold flex items-center gap-3 animate-pulse">
+                    <AlertCircle className="w-6 h-6" />
+                    <div>
+                        <p className="text-xs font-black uppercase tracking-widest opacity-70">Error Occurred</p>
+                        <p>{error}</p>
+                    </div>
+                </div>
+            )}
+
+            {step === 1 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     {Object.entries(KNOWLEDGE_BASE).map(([k, v]) => (
+                        <button key={k} onClick={() => { setSelectedType(k); setStep(2); }} className="p-6 bg-white border-2 border-slate-100 rounded-2xl hover:border-teal-500 hover:shadow-lg transition-all text-left group">
+                            <h3 className="font-black text-teal-700 mb-1 group-hover:text-teal-600">{v.title}</h3>
+                            <p className="text-xs text-slate-400">Hybrid Workflow: AI (Methodology) + Human (Context)</p>
+                        </button>
+                     ))}
+                </div>
+            )}
+
+            {step === 2 && (
+                <div className="space-y-6">
+                    <button onClick={() => setStep(1)} className="text-teal-600 font-bold flex items-center gap-1 hover:underline"><ChevronLeft className="w-4 h-4"/> 重新選擇類型</button>
+                    <div className="bg-white p-12 border-4 border-dashed border-slate-200 rounded-[2.5rem] text-center hover:bg-slate-50 transition-colors relative group">
+                        <input type="file" accept=".pdf" onChange={e => setFile(e.target.files[0])} className="absolute inset-0 opacity-0 cursor-pointer" />
+                        <Upload className="w-16 h-16 text-slate-300 mx-auto mb-4 group-hover:text-teal-500 transition-colors" />
+                        <p className="font-bold text-slate-600">{file ? file.name : "點擊或拖放 PDF 文獻全文進行評讀"}</p>
+                    </div>
+                    <button disabled={!file} onClick={handleInitialAiAppraisal} className="w-full bg-teal-600 text-white font-black py-4 rounded-2xl shadow-xl hover:bg-teal-700 disabled:bg-slate-300 flex items-center justify-center gap-2 transition-transform active:scale-95">
+                        <Play className="w-5 h-5 fill-current" /> 開始 AI 專家品質評讀
+                    </button>
+                </div>
+            )}
+
+            {step === 3 && (
+                <div className="text-center py-20 space-y-4">
+                    <Loader2 className="w-16 h-16 text-teal-500 animate-spin mx-auto" />
+                    <h3 className="text-xl font-black text-slate-700 animate-pulse">AI 正在深度分析文獻...</h3>
+                    <p className="text-slate-400">正在進行偏誤風險評估，請稍候</p>
+                </div>
+            )}
+
+            {(step === 4 || step === 5) && aiResult && (
+                <div className="space-y-8 animate-in slide-in-from-bottom-6 duration-700">
+                    
+                    {aiResult.basic_info && (
+                        <div className="bg-white p-8 rounded-[2rem] shadow-xl border border-slate-100">
+                            <h3 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">
+                                <Book className="text-teal-600" /> 研究基本資訊
+                            </h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 text-sm">
+                                <div>
+                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">標題</span>
+                                    <p className="font-bold text-slate-800">{aiResult.basic_info.title}</p>
+                                </div>
+                                <div>
+                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">作者</span>
+                                    <p className="font-bold text-slate-800">{aiResult.basic_info.authors}</p>
+                                </div>
+                                <div>
+                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">年份</span>
+                                    <p className="font-bold text-slate-800">{aiResult.basic_info.year}</p>
+                                </div>
+                                <div>
+                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">研究目的</span>
+                                    <p className="font-bold text-slate-800">{aiResult.basic_info.objective}</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100">
+                        <div className="flex items-center justify-between mb-6 border-b pb-4">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-teal-100 p-2 rounded-lg"><Zap className="w-5 h-5 text-teal-700" /></div>
+                                <div>
+                                    <h3 className="text-lg font-black text-slate-800">AI 方法學評讀結果</h3>
+                                    <p className="text-xs text-slate-400">針對研究設計與執行偏差的客觀分析</p>
+                                </div>
+                            </div>
+                            <button 
+                                disabled={reappraisalSelection.size === 0 || isReappraising}
+                                onClick={handleReappraise}
+                                className="text-xs bg-slate-800 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                            >
+                                {isReappraising ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                {isReappraising ? 'AI 重新思考中...' : `重新評讀選定項目 (${reappraisalSelection.size})`}
+                            </button>
+                        </div>
+                        
+                        <div className="space-y-4 mb-6">
+                            {aiResult.methodology_table.map((row, index) => (
+                                 <div key={`${row.id}-${index}`} className={`flex flex-col gap-3 p-4 rounded-xl border transition-all ${reappraisalSelection.has(row.id) ? 'bg-indigo-50 border-indigo-300 ring-2 ring-indigo-100' : 'bg-slate-50 border-slate-100'}`}>
+                                    <div className="flex items-start gap-4">
+                                        <div className="pt-1">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={reappraisalSelection.has(row.id)}
+                                                onChange={() => toggleReappraisalItem(row.id)}
+                                                className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                                            />
+                                        </div>
+                                        <div className="font-black text-slate-400 w-8 pt-0.5">{row.id}</div>
+                                        <div className="flex-1 font-bold text-slate-700 cursor-pointer" onClick={() => toggleReappraisalItem(row.id)}>{row.question}</div>
+                                        <div className="w-24 shrink-0 text-right">{renderBadge(row.result)}</div>
+                                    </div>
+                                    <div className="ml-16 pl-4 border-l-2 border-teal-200 text-sm text-slate-600 bg-white/50 p-2 rounded">
+                                        <span className="font-bold text-teal-600 text-xs uppercase tracking-wider block mb-1">Evidence & Reason:</span>
+                                        {row.evidence || "未提供詳細理由"}
+                                    </div>
+          <div className="ml-16 mt-2 p-4 bg-indigo-50/50 rounded-xl border border-indigo-100">
+              <div className="font-bold text-indigo-700 text-sm mb-3">使用者最終判斷</div>
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                  {[1, 2, 3, 4, 5].map(score => (
+                      <button
+                          key={score}
+                          onClick={() => handleUserAppraisalChange(row.id, 'score', score)}
+                          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-black transition-all ${
+                              userAppraisals[row.id]?.score === score
+                                  ? 'bg-indigo-600 text-white shadow-md scale-110 ring-2 ring-indigo-300 ring-offset-1'
+                                  : 'bg-white text-indigo-400 border border-indigo-200 hover:bg-indigo-100'
+                          }`}
+                          title={`${score} 分`}
+                      >
+                          {score}
+                      </button>
+                  ))}
+                  <span className="text-xs font-medium text-indigo-400 ml-2">
+                      (1分=非常不認同, 3分=大致認同, 5分=完全認同)
+                  </span>
+              </div>
+              <textarea
+                  className="w-full p-3 text-sm bg-white border border-indigo-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-all"
+                  placeholder="請填寫判斷理由..."
+                  rows="2"
+                  value={userAppraisals[row.id]?.reason || ''}
+                  onChange={(e) => handleUserAppraisalChange(row.id, 'reason', e.target.value)}
+              />
+          </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-8 rounded-[2rem] shadow-xl border-2 border-indigo-100 relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 to-purple-500"></div>
+                        <div className="flex items-center gap-3 mb-6">
+                            <div className="bg-indigo-100 p-2 rounded-lg"><User className="w-5 h-5 text-indigo-700" /></div>
+                            <div>
+                                <h3 className="text-lg font-black text-slate-800">臨床應用評估 (Human Context)</h3>
+                                <p className="text-xs text-slate-400">請根據您的臨床情境回答以下適用性問題</p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-6">
+                            {KNOWLEDGE_BASE[selectedType].human_scope.map((q) => (
+                                <div key={q.id} className="p-4 rounded-2xl bg-indigo-50/50 border border-indigo-100 transition-all hover:bg-indigo-50">
+                                    <div className="mb-3">
+                                        <span className="text-xs font-black text-indigo-400 uppercase tracking-widest mr-2">Q{q.id}</span>
+                                        <span className="font-bold text-slate-800">{q.question}</span>
+                                        <p className="text-xs text-slate-500 mt-1 pl-8 italic">{q.hint}</p>
+                                    </div>
+                                    <div className="flex gap-2 pl-8">
+                                        {['Yes', 'No', "Can't Tell"].map(opt => (
+                                            <button 
+                                                key={opt}
+                                                onClick={() => handleHumanInput(q.id, opt)}
+                                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                                                    humanAnswers[q.id] === opt 
+                                                    ? 'bg-indigo-600 text-white shadow-md scale-105' 
+                                                    : 'bg-white text-slate-500 border border-slate-200 hover:border-indigo-300'
+                                                }`}
+                                            >
+                                                {opt}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {step === 4 && (
+                            <button 
+                                onClick={handleGenerateFinalReport}
+                                className="w-full mt-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95"
+                            >
+                                {isLoading ? <Loader2 className="animate-spin" /> : <FileCheck className="w-5 h-5" />}
+                                整合意見，生成最終報告
+                            </button>
+                        )}
+                    </div>
+
+                    {step === 5 && finalSummary && (
+        <div className="bg-white p-8 rounded-[2rem] shadow-2xl animate-in slide-in-from-bottom-4 border border-slate-200">
+            <div className="space-y-6">
+                <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                    <Activity className="text-teal-600" /> Appraisal Summary & Visualization
+                </h3>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-green-50 border border-green-100 p-6 rounded-2xl transition-all hover:shadow-md">
+                        <h4 className="text-xs font-black text-green-700 uppercase mb-3 flex items-center gap-2">
+                            <ThumbsUp className="w-4 h-4" /> Positive / Strengths
+                        </h4>
+                        <p className="text-sm text-green-800 leading-relaxed whitespace-pre-wrap">{finalSummary.positive || "無特別優點"}</p>
+                    </div>
+                    <div className="bg-red-50 border border-red-100 p-6 rounded-2xl transition-all hover:shadow-md">
+                        <h4 className="text-xs font-black text-red-700 uppercase mb-3 flex items-center gap-2">
+                            <ThumbsDown className="w-4 h-4" /> Negative / Weaknesses
+                        </h4>
+                        <p className="text-sm text-red-800 leading-relaxed whitespace-pre-wrap">{finalSummary.negative || "無明顯缺失"}</p>
+                    </div>
+                    <div className="bg-amber-50 border border-amber-100 p-6 rounded-2xl transition-all hover:shadow-md">
+                        <h4 className="text-xs font-black text-amber-700 uppercase mb-3 flex items-center gap-2">
+                            <HelpCircle className="w-4 h-4" /> Unknowns
+                        </h4>
+                        <p className="text-sm text-amber-800 leading-relaxed whitespace-pre-wrap">{finalSummary.unknown || "無不明確資訊"}</p>
+                    </div>
+                </div>
+
+                <div className="bg-teal-700 text-white rounded-xl shadow-md p-6 mb-8">
+                    <h3 className="text-lg font-bold mb-3 flex items-center gap-2">
+                        <FileCheck className="w-6 h-6" /> 整體評讀結論 (Overall Conclusion)
+                    </h3>
+                    <p className="text-teal-50 leading-relaxed whitespace-pre-wrap text-lg">{finalSummary.conclusion}</p>
+                </div>
+
+                {drawingPrompt && (
+                    <div className="bg-slate-900 rounded-2xl p-6 border-l-4 border-indigo-500 animate-in fade-in duration-500">
+                        <div className="flex justify-between items-center mb-4">
+                            <h4 className="text-indigo-400 text-xs font-black uppercase tracking-widest flex items-center gap-2">
+                                <Layers className="w-4 h-4" /> AI Visualization Prompt (Nano Banana)
+                            </h4>
+                            <button 
+                                onClick={() => {
+                                    navigator.clipboard.writeText(drawingPrompt);
+                                    alert("Prompt 已複製到剪貼簿！");
+                                }}
+                                className="text-[10px] bg-indigo-500/20 text-indigo-300 px-3 py-1 rounded-full hover:bg-indigo-500 hover:text-white transition-all flex items-center gap-1"
+                            >
+                                <ClipboardList className="w-3 h-3" /> 點擊複製
+                            </button>
+                        </div>
+                        <pre className="text-[11px] text-slate-300 font-mono whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto custom-scrollbar">
+                            {drawingPrompt}
+                        </pre>
+                    </div>
+                )}
+            </div>
+
+            <div className="flex flex-col md:flex-row gap-4 mt-8 pt-8 border-t border-slate-100 justify-end">
+                <button 
+                    onClick={handleGenerateDrawingPrompt} 
+                    disabled={isRefining}
+                    className="flex items-center justify-center gap-2 bg-indigo-50 text-indigo-700 border-2 border-indigo-100 px-6 py-3 rounded-xl font-black hover:bg-indigo-600 hover:text-white transition-all active:scale-95 disabled:opacity-50"
+                >
+                    {isRefining ? <Loader2 className="animate-spin w-5 h-5" /> : <BarChart3 className="w-5 h-5" />}
+                    {isRefining ? "正在生成內容..." : "生成視覺化繪圖 Prompt"}
+                </button>
+                
+                <button onClick={handleExportCombined} className="flex items-center justify-center gap-2 bg-teal-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-teal-700 transition-shadow shadow-md active:scale-95">
+                    <Download className="w-5 h-5" /> 匯出評讀報告 PDF
+                </button>
+            </div>
+
+            <div className="p-4 bg-slate-50 rounded-2xl flex flex-wrap justify-around gap-6 mt-6">
+                <div className="flex flex-col items-center gap-1">
+                    <div className="flex items-center gap-1 text-[10px] text-slate-400 font-black uppercase tracking-widest">
+                        <Zap className="w-3 h-3 text-teal-500" /> Model
+                    </div>
+                    <span className="text-sm font-bold text-slate-700">{usedConfig.model}</span>
+                </div>
+                <div className="flex flex-col items-center gap-1">
+                    <div className="flex items-center gap-1 text-[10px] text-slate-400 font-black uppercase tracking-widest">
+                        <Hash className="w-3 h-3 text-teal-500" /> Version
+                    </div>
+                    <span className="text-sm font-bold text-slate-700">{APP_VERSION}</span>
+                </div>
+                <div className="flex flex-col items-center gap-1">
+                    <div className="flex items-center gap-1 text-[10px] text-slate-400 font-black uppercase tracking-widest">
+                        <Target className="w-3 h-3 text-teal-500" /> Top-P
+                    </div>
+                    <span className="text-sm font-bold text-slate-700">{usedConfig.topP}</span>
+                </div>
+                <div className="flex flex-col items-center gap-1">
+                    <div className="flex items-center gap-1 text-[10px] text-slate-400 font-black uppercase tracking-widest">
+                        <Activity className="w-3 h-3 text-teal-500" /> Temperature
+                    </div>
+                    <span className="text-sm font-bold text-slate-700">{usedConfig.temperature}</span>
+                </div>
+            </div>
+        </div>
+    )}
+                </div>
+            )}
+        </div>
+      );
+    };
+
+    function App() {
+      const [isAuthenticated, setIsAuthenticated] = useState(false);
+      const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
+      const [mode, setMode] = useState('home');
+      const [geminiKey, setGeminiKey] = useState('');
+      const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+      if (!isAuthenticated) {
+        return <LoginScreen onLogin={(status, key) => {
+          setIsAuthenticated(status);
+          setGeminiKey(key); 
+        }} />;
+      }
+
+      if (!hasAcceptedTerms) {
+        return <DisclaimerModal onAccept={() => setHasAcceptedTerms(true)} />;
+      }
+
+      const modeConfig = {
+        search: { color: 'bg-indigo-600', label: 'PubMed Search Bot' },
+        appraisal: { color: 'bg-teal-600', label: 'Literature Appraiser' },
+        home: { color: 'bg-indigo-600', label: '' }
+      };
+
+      const currentConfig = modeConfig[mode] || modeConfig.home;
+
+      return (
+        <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-indigo-100">
+          <header className={`sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200 transition-all ${mode !== 'home' ? 'py-3' : 'py-6'}`}>
+      <div className="max-w-6xl mx-auto px-6 flex justify-between items-center">
+        
+        {/* 左側 Logo 與標題 */}
+        <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setMode('home')}>
+          <div className={`p-2 rounded-xl text-white shadow-lg transition-all group-hover:scale-110 ${currentConfig.color}`}>
+            <Award className="w-6 h-6" />
+          </div>
+          <div>
+            <h1 className="text-lg font-black tracking-tighter">AI Evidence-based Medicine Bot</h1>
+            {mode !== 'home' && <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{currentConfig.label}</p>}
+          </div>
+        </div>
+
+        {/* 右側按鈕區 */}
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={() => setIsSettingsOpen(true)} 
+            className="flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 px-3 py-2 rounded-xl transition-all border border-transparent hover:border-indigo-100"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="hidden sm:inline">系統設定</span>
+          </button>
+
+          {mode !== 'home' && (
+            <button onClick={() => setMode('home')} className="flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-slate-900 bg-slate-100 px-4 py-2 rounded-xl transition-colors">
+              <Home className="w-4 h-4" /> 
+              <span className="hidden sm:inline">返回首頁</span>
+            </button>
+          )}
+
+          <button onClick={() => setIsAuthenticated(false)} className="p-2 text-slate-300 hover:text-rose-500 transition-colors" title="登出系統">
+            <Lock className="w-4 h-4" />
+          </button>
+        </div>
+
+      </div>
+    </header>
+
+          <main className="max-w-6xl mx-auto px-6 py-10">
+            {mode === 'home' && (
+              <div className="max-w-5xl mx-auto animate-in fade-in zoom-in duration-700">
+                <div className="text-center mb-16">
+                  <h2 className="text-5xl font-black text-slate-900 tracking-tight mb-4">慧實證</h2>
+                  <p className="text-xl text-slate-500 font-medium">整合自動化檢索與 CASP 評讀，加速實證醫學流程。</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+                  <div onClick={() => setMode('search')} className="group relative bg-white p-10 rounded-[2.5rem] shadow-xl shadow-slate-200 border border-white hover:border-indigo-200 hover:-translate-y-2 transition-all cursor-pointer overflow-hidden">
+                    <div className="absolute top-0 right-0 p-8 bg-indigo-50 rounded-full -mr-8 -mt-8 group-hover:bg-indigo-600 transition-colors">
+                      <Search className="w-12 h-12 text-indigo-600 group-hover:text-white" />
+                    </div>
+                    <div className="relative z-10">
+                      <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest bg-indigo-50 px-2 py-1 rounded-full">Automation</span>
+                      <h3 className="text-2xl font-black mt-4 mb-2">深度文獻檢索</h3>
+                      <p className="text-slate-500 text-sm leading-relaxed mb-6">自動拆解 PICO 並執行精準檢索。</p>
+                      <div className="flex items-center gap-2 text-indigo-600 font-bold text-sm">啟動檢索 <ArrowRight className="w-4 h-4" /></div>
+                    </div>
+                  </div>
+
+                  <div onClick={() => setMode('appraisal')} className="group relative bg-white p-10 rounded-[2.5rem] shadow-xl shadow-slate-200 border border-white hover:border-teal-200 hover:-translate-y-2 transition-all cursor-pointer overflow-hidden">
+                    <div className="absolute top-0 right-0 p-8 bg-teal-50 rounded-full -mr-8 -mt-8 group-hover:bg-teal-600 transition-colors">
+                      <FileText className="w-12 h-12 text-teal-600 group-hover:text-white" />
+                    </div>
+                    <div className="relative z-10">
+                      <span className="text-[10px] font-black text-teal-600 uppercase tracking-widest bg-teal-50 px-2 py-1 rounded-full">CASP Expert</span>
+                      <h3 className="text-2xl font-black mt-4 mb-2">文獻品質評讀</h3>
+                      <p className="text-slate-500 text-sm leading-relaxed mb-6">標準化查檢與 AI 證據引用分析。</p>
+                      <div className="flex items-center gap-2 text-teal-600 font-bold text-sm">啟動評讀 <ArrowRight className="w-4 h-4" /></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {mode === 'search' && <SearchTool geminiKey={geminiKey} />}
+            {mode === 'appraisal' && <AppraisalTool geminiKey={geminiKey} />}
+          </main>
+          <SettingsModal 
+            isOpen={isSettingsOpen} 
+            onClose={() => setIsSettingsOpen(false)} 
+            geminiKey={geminiKey}
+            setGeminiKey={setGeminiKey}
+          />
+        </div>
+      );
+    }
+
+    // 將 App 元件渲染到 HTML 的 root 節點
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
